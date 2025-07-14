@@ -46,12 +46,20 @@ export class FirestoreService {
     }
 
     const now = Timestamp.now();
-    const userDoc = {
-      ...userData,
+    // Remove undefined fields to avoid Firestore errors
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userDoc: any = {
+      discordId: userData.discordId,
+      username: userData.username,
       isModerator: userData.isModerator || false,
       createdAt: now,
       updatedAt: now,
     };
+
+    // Only add avatar if it's defined
+    if (userData.avatar !== undefined && userData.avatar !== null) {
+      userDoc.avatar = userData.avatar;
+    }
 
     const docRef = await addDoc(this.users, userDoc);
     
@@ -275,13 +283,20 @@ export class FirestoreService {
   // Message operations
   static async createMessage(messageData: CreateMessageData): Promise<Message> {
     const now = Timestamp.now();
-    const messageDoc = {
+    // Remove undefined fields to avoid Firestore errors
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const messageDoc: any = {
       content: messageData.content,
       authorId: messageData.authorId,
       sessionId: messageData.sessionId,
       timestamp: now,
       isAnonymous: messageData.isAnonymous || false,
     };
+
+    // Only add authorName if it's defined
+    if (messageData.authorName !== undefined && messageData.authorName !== null) {
+      messageDoc.authorName = messageData.authorName;
+    }
 
     const docRef = await addDoc(this.messages, messageDoc);
     

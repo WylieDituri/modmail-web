@@ -1,26 +1,89 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-// import { io, Socket } from 'socket.io-client';
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import { MessageSquare, Users, CheckCircle, Send, X, ChevronDown, ChevronRight, User, LogOut, Search } from 'lucide-react';
-import { ChatSession, ModeratorStats, GroupedSessions, getMessageDisplayAuthor, getMessageDisplayName } from '@/types';
-import { getModeratorAuth, clearModeratorAuth, isModeratorAuthenticated } from '@/lib/moderatorAuth';
+import { ChatSession, ModeratorStats, GroupedSessions, getMessageDisplayAuthor, getMessageDisplayName, Message } from '@/types';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/hooks/useAuth';
+
+
+// Memoized session item component to prevent unnecessary re-renders
+const SessionItem = memo(function SessionItem({ 
+  session, 
+  isSelected, 
+  onClick, 
+  isUserInactive, 
+  formatTimeAgo 
+}: {
+  session: ChatSession;
+  isSelected: boolean;
+  onClick: () => void;
+  isUserInactive: (session: ChatSession) => boolean;
+  formatTimeAgo: (date: Date | string) => string;
+}) {
+  const handleClick = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onClick();
+  }, [onClick]);
+
+  return (
+    <div
+      className={`p-4 border-b cursor-pointer hover:bg-gray-50 transition-colors duration-150 ${
+        isSelected ? 'bg-blue-50 border-blue-200' : ''
+      }`}
+      onClick={handleClick}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center">
+          <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
+            {session.user?.username?.[0]?.toUpperCase() || 'U'}
+          </div>
+          <div className="ml-3 flex-1">
+            <div className="flex items-center space-x-2">
+              <p className="text-sm font-medium text-gray-900">{session.user?.username || 'Unknown User'}</p>
+              {session.status !== 'closed' && isUserInactive(session) && (
+                <span className="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded-full">
+                  Inactive User
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-500">{formatTimeAgo(session.lastActivity)}</p>
+          </div>
+        </div>
+        <div className="flex items-center">
+          <span className={`px-2 py-1 text-xs rounded-full ${
+            session.status === 'active' 
+              ? 'bg-green-100 text-green-800' 
+              : session.status === 'closed'
+              ? 'bg-gray-100 text-gray-800'
+              : 'bg-yellow-100 text-yellow-800'
+          }`}>
+            {session.status}
+          </span>
+        </div>
+      </div>
+      <p className="text-xs text-gray-600 mt-2 truncate">
+        {session.messages[session.messages.length - 1]?.content || 'No messages yet'}
+      </p>
+    </div>
+  );
+});
 
 export default function ModeratorDashboard() {
   const router = useRouter();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [moderatorInfo, setModeratorInfo] = useState<{ username: string; id: string } | null>(null);
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const { user, isLoading: isCheckingAuth, isAuthenticated, logout } = useAuth();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [groupedSessions, setGroupedSessions] = useState<GroupedSessions[]>([]);
   const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<'list' | 'grouped'>('grouped');
   const [selectedSession, setSelectedSession] = useState<ChatSession | null>(null);
+  const [pendingSessionSelection, setPendingSessionSelection] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [replyAnonymously, setReplyAnonymously] = useState(false);
   // const [socket, setSocket] = useState<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const previousSessionsRef = useRef<ChatSession[]>([]);
   const previousGroupedSessionsRef = useRef<GroupedSessions[]>([]);
   const previousStatsRef = useRef<ModeratorStats>({
@@ -33,6 +96,7 @@ export default function ModeratorDashboard() {
   const lastUpdatedRef = useRef<number>(0);
   const [lastMessageCount, setLastMessageCount] = useState(0);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  const [lastSelectedSessionId, setLastSelectedSessionId] = useState<string | null>(null);
   const [viewClosedSessions, setViewClosedSessions] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
@@ -43,29 +107,17 @@ export default function ModeratorDashboard() {
     satisfactionRate: 0
   });
 
-  // Check authentication on component mount
+  // Check if user is a moderator (middleware should already handle basic auth)
   useEffect(() => {
-    const checkAuth = () => {
-      if (!isModeratorAuthenticated()) {
-        router.push('/moderator/login');
-        return;
-      }
-      
-      const auth = getModeratorAuth();
-      if (auth) {
-        setIsAuthenticated(true);
-        setModeratorInfo({ username: auth.username, id: auth.id });
-      }
-      setIsCheckingAuth(false);
-    };
-    
-    checkAuth();
-  }, [router]);
+    if (!isCheckingAuth && isAuthenticated && user && !user.isModerator) {
+      // Non-moderators should be redirected by middleware, but just in case
+      router.push('/dashboard');
+    }
+  }, [isAuthenticated, isCheckingAuth, user, router]);
 
   // Handle logout
   const handleLogout = () => {
-    clearModeratorAuth();
-    router.push('/moderator/login');
+    logout();
   };
 
   useEffect(() => {
@@ -178,8 +230,8 @@ export default function ModeratorDashboard() {
 
     fetchData();
 
-    // Set up polling every 3 seconds to refresh data (reduced from 5 seconds)
-    const interval = setInterval(fetchData, 3000);
+    // Increase polling interval to 5 seconds to reduce server load and UI flicker
+    const interval = setInterval(fetchData, 5000);
 
     return () => {
       clearInterval(interval);
@@ -195,8 +247,34 @@ export default function ModeratorDashboard() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  // Simple, immediate session selection with no interference
+  const handleSessionSelection = useCallback((session: ChatSession) => {
+    // Immediately clear any pending operations
+    setPendingSessionSelection(null);
+    setHasNewMessages(false);
+    
+    // Clear any scroll timeouts to prevent interference
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = null;
+    }
+    
+    // Set the session immediately - no delays, no debouncing
+    setSelectedSession(session);
+    setLastSelectedSessionId(session.id);
+    setLastMessageCount(session.messages.length);
+    
+    // Force immediate scroll to bottom without animation
+    // Use requestAnimationFrame to ensure DOM is updated first
+    requestAnimationFrame(() => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'instant' });
+      }
+    });
+  }, []);
+
   const handleSendMessage = async () => {
-    if (!message.trim() || !selectedSession || !moderatorInfo) return;
+    if (!message.trim() || !selectedSession || !user) return;
 
     try {
       // First ensure moderator user exists
@@ -206,8 +284,8 @@ export default function ModeratorDashboard() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          discordId: moderatorInfo.id,
-          username: moderatorInfo.username,
+          discordId: user.discordId,
+          username: user.username,
           isModerator: true,
         }),
       });
@@ -248,20 +326,43 @@ export default function ModeratorDashboard() {
             }),
           });
           
-          // Update local state
-          setSelectedSession(prev => prev ? {
-            ...prev,
-            status: 'active',
-            messages: [...prev.messages, newMessage]
-          } : null);
+          // Update local state with deduplication
+          setSelectedSession(prev => {
+            if (!prev) return prev;
+            
+            // Check if message already exists to prevent duplicates
+            const messageExists = prev.messages.some(m => m.id === newMessage.id);
+            if (messageExists) return prev;
+            
+            return {
+              ...prev,
+              status: 'active',
+              messages: [...prev.messages, newMessage]
+            };
+          });
 
-          setSessions(prev => prev.map(session => 
-            session.id === selectedSession.id 
-              ? { ...session, status: 'active', messages: [...session.messages, newMessage] }
-              : session
-          ));
+          setSessions(prev => prev.map(session => {
+            if (session.id !== selectedSession.id) return session;
+            
+            // Check if message already exists to prevent duplicates
+            const messageExists = session.messages.some(m => m.id === newMessage.id);
+            if (messageExists) {
+              return { ...session, status: 'active' };
+            }
+            
+            return { 
+              ...session, 
+              status: 'active', 
+              messages: [...session.messages, newMessage] 
+            };
+          }));
 
           setMessage('');
+          
+          // Scroll to bottom to show the new message
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 100);
         }
       }
     } catch (error) {
@@ -307,6 +408,19 @@ export default function ModeratorDashboard() {
     }
   };
 
+  // Helper function to deduplicate messages by ID
+  const deduplicateMessages = useCallback((messages: Message[]) => {
+    const seen = new Set();
+    return messages.filter((message) => {
+      if (seen.has(message.id)) {
+        console.warn('Duplicate message detected:', message.id);
+        return false;
+      }
+      seen.add(message.id);
+      return true;
+    });
+  }, []);
+
   const formatTimeAgo = (date: Date | string) => {
     const dateObj = typeof date === 'string' ? new Date(date) : date;
     
@@ -331,7 +445,25 @@ export default function ModeratorDashboard() {
     }
   }, [selectedSession]);
 
-  // Poll for messages in the selected session more frequently
+  // Sync selected session with sessions list to prevent flickering
+  useEffect(() => {
+    if (selectedSession && sessions.length > 0) {
+      // Find the updated session in the sessions list
+      const updatedSession = sessions.find(session => session.id === selectedSession.id);
+      if (updatedSession) {
+        // Only update if there are actual changes to prevent unnecessary re-renders
+        const selectedSessionStr = JSON.stringify(selectedSession);
+        const updatedSessionStr = JSON.stringify(updatedSession);
+        
+        if (selectedSessionStr !== updatedSessionStr) {
+          console.log('Syncing selected session with sessions list');
+          setSelectedSession(updatedSession);
+        }
+      }
+    }
+  }, [sessions, selectedSession]);
+
+  // Enhanced message polling that integrates with main data fetching
   useEffect(() => {
     if (!selectedSession) return;
 
@@ -339,7 +471,8 @@ export default function ModeratorDashboard() {
       try {
         const response = await fetch(`/api/messages?sessionId=${selectedSession.id}`);
         if (response.ok) {
-          const messages = await response.json();
+          const rawMessages = await response.json();
+          const messages = deduplicateMessages(rawMessages);
           
           // Only update if messages have actually changed
           const messagesChanged = JSON.stringify(messages) !== JSON.stringify(previousSelectedSessionMessagesRef.current);
@@ -350,18 +483,13 @@ export default function ModeratorDashboard() {
               newCount: messages.length
             });
             
-            setSelectedSession(prev => {
-              if (!prev) return prev;
-              return {
-                ...prev,
-                messages: messages
-              };
-            });
+            // Update both selected session and sessions list atomically
+            const updatedSession = { ...selectedSession, messages };
             
-            // Also update the session in the sessions list
+            setSelectedSession(updatedSession);
             setSessions(prev => prev.map(session => 
               session.id === selectedSession.id 
-                ? { ...session, messages: messages }
+                ? updatedSession
                 : session
             ));
             
@@ -378,18 +506,43 @@ export default function ModeratorDashboard() {
     // Initial fetch
     fetchSelectedSessionMessages();
     
-    // Set up more frequent polling (every 1 second) for the selected session
-    const messageInterval = setInterval(fetchSelectedSessionMessages, 1000);
+    // Set up polling (every 2 seconds) for the selected session - reduced frequency to reduce conflicts
+    const messageInterval = setInterval(fetchSelectedSessionMessages, 2000);
 
     return () => {
       clearInterval(messageInterval);
     };
-  }, [selectedSession]);
+  }, [selectedSession, deduplicateMessages]);
 
-  // Scroll to bottom when messages change
+  // Only handle scrolling for new messages in the SAME session
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [selectedSession?.messages]);
+    if (!selectedSession || !lastSelectedSessionId) return;
+    
+    // Only scroll if we're staying in the same session and got new messages
+    if (selectedSession.id === lastSelectedSessionId && 
+        selectedSession.messages.length > lastMessageCount &&
+        lastMessageCount > 0) {
+      
+      // Clear any existing scroll timeout
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+      
+      // Smooth scroll for new messages only
+      scrollTimeoutRef.current = setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 200);
+      
+      setLastMessageCount(selectedSession.messages.length);
+    }
+    
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+        scrollTimeoutRef.current = null;
+      }
+    };
+  }, [selectedSession, lastSelectedSessionId, lastMessageCount]);
 
   // Track new messages and show notification
   useEffect(() => {
@@ -520,33 +673,17 @@ export default function ModeratorDashboard() {
     }).filter(group => group.sessions.length > 0); // Only keep groups with matching sessions
   }, []);
 
-  // Combined filter function for sessions (status + search)
-  const getFilteredAndSearchedSessions = useCallback((sessions: ChatSession[]) => {
+  // Memoized filtered sessions to prevent unnecessary recalculations
+  const filteredAndSearchedSessions = useMemo(() => {
     const filtered = getFilteredSessions(sessions);
     return filterSessionsBySearch(filtered, debouncedSearchQuery);
-  }, [getFilteredSessions, filterSessionsBySearch, debouncedSearchQuery]);
+  }, [sessions, debouncedSearchQuery, getFilteredSessions, filterSessionsBySearch]);
 
-  // Combined filter function for grouped sessions (status + search)
-  const getFilteredAndSearchedGroupedSessions = useCallback((groups: GroupedSessions[]) => {
-    const filtered = getFilteredGroupedSessions(groups);
+  // Memoized filtered grouped sessions to prevent unnecessary recalculations
+  const filteredAndSearchedGroupedSessions = useMemo(() => {
+    const filtered = getFilteredGroupedSessions(groupedSessions);
     return filterGroupedSessionsBySearch(filtered, debouncedSearchQuery);
-  }, [getFilteredGroupedSessions, filterGroupedSessionsBySearch, debouncedSearchQuery]);
-
-  // Helper function to highlight search terms
-  const highlightSearchTerm = (text: string, searchTerm: string) => {
-    if (!searchTerm.trim()) return text;
-    
-    const regex = new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    const parts = text.split(regex);
-    
-    return parts.map((part, index) => 
-      regex.test(part) ? (
-        <span key={index} className="bg-yellow-200 font-medium">{part}</span>
-      ) : (
-        part
-      )
-    );
-  };
+  }, [groupedSessions, debouncedSearchQuery, getFilteredGroupedSessions, filterGroupedSessionsBySearch]);
 
   // Debug function to log filtering results
   useEffect(() => {
@@ -556,10 +693,10 @@ export default function ModeratorDashboard() {
       console.log('Search Query:', debouncedSearchQuery);
       console.log('Total Sessions:', sessions.length);
       console.log('Filtered Sessions:', getFilteredSessions(sessions).length);
-      console.log('Filtered + Searched Sessions:', getFilteredAndSearchedSessions(sessions).length);
+      console.log('Filtered + Searched Sessions:', filteredAndSearchedSessions.length);
       console.log('Total Groups:', groupedSessions.length);
       console.log('Filtered Groups:', getFilteredGroupedSessions(groupedSessions).length);
-      console.log('Filtered + Searched Groups:', getFilteredAndSearchedGroupedSessions(groupedSessions).length);
+      console.log('Filtered + Searched Groups:', filteredAndSearchedGroupedSessions.length);
       
       // Log session statuses
       const sessionStatuses = sessions.reduce((acc, session) => {
@@ -568,7 +705,7 @@ export default function ModeratorDashboard() {
       }, {} as Record<string, number>);
       console.log('Session Statuses:', sessionStatuses);
     }
-  }, [sessions, groupedSessions, viewClosedSessions, debouncedSearchQuery, getFilteredSessions, getFilteredGroupedSessions, getFilteredAndSearchedSessions, getFilteredAndSearchedGroupedSessions]);
+  }, [sessions, groupedSessions, viewClosedSessions, debouncedSearchQuery, getFilteredSessions, getFilteredGroupedSessions, filteredAndSearchedSessions, filteredAndSearchedGroupedSessions]);
 
   // Show loading spinner while checking auth
   if (isCheckingAuth) {
@@ -595,7 +732,7 @@ export default function ModeratorDashboard() {
           <h1 className="text-2xl font-bold text-gray-900">Moderator Dashboard</h1>
           <div className="flex items-center space-x-4">
             <span className="text-sm text-gray-600">
-              Welcome, {moderatorInfo?.username}
+              Welcome, {user?.username}
             </span>
             <button
               onClick={handleLogout}
@@ -721,7 +858,7 @@ export default function ModeratorDashboard() {
               <div className="max-h-96 overflow-y-auto">
                 {viewMode === 'list' ? (
                   // List View
-                  getFilteredAndSearchedSessions(sessions).length === 0 ? (
+                  filteredAndSearchedSessions.length === 0 ? (
                     <div className="p-8 text-center">
                       <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                       <h3 className="text-lg font-medium text-gray-900 mb-2">
@@ -737,52 +874,20 @@ export default function ModeratorDashboard() {
                       </p>
                     </div>
                   ) : (
-                    getFilteredAndSearchedSessions(sessions).map((session) => (
-                      <div
+                    filteredAndSearchedSessions.map((session: ChatSession) => (
+                      <SessionItem
                         key={session.id}
-                        className={`p-4 border-b cursor-pointer hover:bg-gray-50 ${
-                          selectedSession?.id === session.id ? 'bg-blue-50 border-blue-200' : ''
-                        }`}
-                        onClick={() => setSelectedSession(session)}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center">
-                            <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
-                              {session.user?.username?.[0]?.toUpperCase() || 'U'}
-                            </div>
-                            <div className="ml-3 flex-1">
-                              <div className="flex items-center space-x-2">
-                                <p className="text-sm font-medium text-gray-900">{session.user?.username || 'Unknown User'}</p>
-                                {session.status !== 'closed' && isUserInactive(session) && (
-                                  <span className="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded-full">
-                                    Inactive User
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-gray-500">{formatTimeAgo(session.lastActivity)}</p>
-                            </div>
-                          </div>
-                          <div className="flex items-center">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              session.status === 'active' 
-                                ? 'bg-green-100 text-green-800' 
-                                : session.status === 'closed'
-                                ? 'bg-gray-100 text-gray-800'
-                                : 'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {session.status}
-                            </span>
-                          </div>
-                        </div>
-                        <p className="text-xs text-gray-600 mt-2 truncate">
-                          {session.messages[session.messages.length - 1]?.content || 'No messages yet'}
-                        </p>
-                      </div>
+                        session={session}
+                        isSelected={selectedSession?.id === session.id || pendingSessionSelection === session.id}
+                        onClick={() => handleSessionSelection(session)}
+                        isUserInactive={isUserInactive}
+                        formatTimeAgo={formatTimeAgo}
+                      />
                     ))
                   )
                 ) : (
                   // Grouped View
-                  getFilteredAndSearchedGroupedSessions(groupedSessions).length === 0 ? (
+                  filteredAndSearchedGroupedSessions.length === 0 ? (
                     <div className="p-8 text-center">
                       <User className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                       <h3 className="text-lg font-medium text-gray-900 mb-2">
@@ -798,7 +903,7 @@ export default function ModeratorDashboard() {
                       </p>
                     </div>
                   ) : (
-                    getFilteredAndSearchedGroupedSessions(groupedSessions).map((group) => (
+                    filteredAndSearchedGroupedSessions.map((group: GroupedSessions) => (
                       <div key={group.user.discordId} className="border-b">
                         {group.isGuestUser ? (
                           // Guest User - Display as individual session (no expand/collapse)
@@ -806,7 +911,11 @@ export default function ModeratorDashboard() {
                             className={`p-4 cursor-pointer hover:bg-gray-50 ${
                               selectedSession?.id === group.sessions[0].id ? 'bg-blue-50 border-blue-200' : ''
                             }`}
-                            onClick={() => setSelectedSession(group.sessions[0])}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleSessionSelection(group.sessions[0]);
+                            }}
                           >
                             <div className="flex items-center justify-between">
                               <div className="flex items-center">
@@ -903,13 +1012,17 @@ export default function ModeratorDashboard() {
                             {/* Expanded Sessions */}
                             {expandedUsers.has(group.user.discordId) && (
                               <div className="bg-gray-50">
-                                {group.sessions.map((session) => (
+                                {group.sessions.map((session: ChatSession) => (
                                   <div
                                     key={session.id}
                                     className={`p-3 ml-4 border-l-2 cursor-pointer hover:bg-gray-100 ${
                                       selectedSession?.id === session.id ? 'bg-blue-50 border-blue-400' : 'border-gray-200'
                                     }`}
-                                    onClick={() => setSelectedSession(session)}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handleSessionSelection(session);
+                                    }}
                                   >
                                     <div className="flex items-center justify-between">
                                       <div className="flex-1">
@@ -1014,14 +1127,17 @@ export default function ModeratorDashboard() {
                 </div>
 
                 {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {selectedSession.messages.map((msg) => {
+                <div 
+                  key={`messages-${selectedSession.id}`}
+                  className="flex-1 overflow-y-auto p-4 space-y-4"
+                >
+                  {deduplicateMessages(selectedSession.messages).map((msg, index) => {
                     const displayAuthor = getMessageDisplayAuthor(msg, 'moderator');
                     const displayName = getMessageDisplayName(msg, 'moderator');
                     
                     return (
                       <div
-                        key={msg.id}
+                        key={`${msg.id}-${index}`}
                         className={`flex ${displayAuthor?.isModerator ? 'justify-end' : 'justify-start'}`}
                       >
                         <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${

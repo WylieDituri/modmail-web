@@ -57,23 +57,23 @@ docker ps
 1. Go to https://supabase.com/
 2. Create a new project
 3. Get your database URL from Settings > Database
-4. Use the connection string in your `.env.local` file
+4. Use the connection string in your `.env` file
 
 ### Railway (Free tier available)
 1. Go to https://railway.app/
 2. Create a new PostgreSQL database
 3. Copy the connection string
-4. Use it in your `.env.local` file
+4. Use it in your `.env` file
 
 ### Render (Free tier available)
 1. Go to https://render.com/
 2. Create a new PostgreSQL database
 3. Copy the connection string
-4. Use it in your `.env.local` file
+4. Use it in your `.env` file
 
 ## Environment Configuration
 
-After setting up your database, update your `.env.local` file:
+After setting up your database, update your `.env` file:
 
 ```env
 # Replace with your actual database connection string

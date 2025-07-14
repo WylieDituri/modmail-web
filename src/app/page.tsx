@@ -9,6 +9,7 @@ export default function Home() {
   const router = useRouter();
   const [discordUserId, setDiscordUserId] = useState<string | null>(null);
   const [showAuthOptions, setShowAuthOptions] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     // Check if Discord user ID is provided in URL parameters
@@ -70,30 +71,26 @@ export default function Home() {
     }
   };
 
-  const handleDiscordOAuth = () => {
-    // Discord OAuth flow
-    const clientId = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID;
-    const redirectUri = encodeURIComponent(window.location.origin + '/auth/discord/callback');
-    const scope = 'identify';
-    
-    if (clientId) {
-      const discordAuthUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}`;
-      window.location.href = discordAuthUrl;
-    } else {
-      // Fallback: prompt for Discord ID if OAuth is not configured
-      const userDiscordId = prompt('Discord OAuth not configured. Enter your Discord User ID manually:');
-      if (userDiscordId && userDiscordId.trim()) {
-        // Save to localStorage for persistence
-        const userData = {
-          id: userDiscordId.trim(),
-          username: `User#${userDiscordId.slice(-4)}`,
-          manual: true
-        };
-        localStorage.setItem('discord_user', JSON.stringify(userData));
-        
-        setDiscordUserId(userDiscordId.trim());
-        setShowAuthOptions(true);
+  const handleDiscordOAuth = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Get Discord OAuth URL from API (same as login page)
+      const response = await fetch('/api/auth/login');
+      
+      if (!response.ok) {
+        throw new Error('Failed to get authentication URL');
       }
+      
+      const { authUrl } = await response.json();
+      
+      // Redirect to Discord OAuth
+      window.location.href = authUrl;
+      
+    } catch (error) {
+      console.error('Login error:', error);
+      setIsLoading(false);
+      alert('Failed to initiate Discord login. Please try again.');
     }
   };
 
@@ -176,10 +173,11 @@ export default function Home() {
         <div className="space-y-4">
           <button
             onClick={handleDiscordOAuth}
-            className="w-full px-8 py-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-semibold text-lg flex items-center justify-center space-x-2"
+            disabled={isLoading}
+            className="w-full px-8 py-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold text-lg flex items-center justify-center space-x-2"
           >
             <User className="h-5 w-5" />
-            <span>Login with Discord</span>
+            <span>{isLoading ? 'Connecting to Discord...' : 'Continue with Discord'}</span>
           </button>
           
           <button
@@ -196,11 +194,12 @@ export default function Home() {
         </p>
         
         <div className="mt-8 pt-4 border-t border-gray-200">
+          <p className="text-xs text-gray-500 mb-2">Already a moderator?</p>
           <button
-            onClick={() => router.push('/moderator/login')}
-            className="text-xs text-blue-600 hover:text-blue-700 underline"
+            onClick={() => router.push('/moderator')}
+            className="text-sm text-blue-600 hover:text-blue-700 underline font-medium"
           >
-            Moderator Login
+            Go to Moderator Dashboard
           </button>
         </div>
       </div>

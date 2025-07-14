@@ -59,7 +59,7 @@ GRANT ALL PRIVILEGES ON DATABASE modmail_db TO modmail_user;
 ```
 
 3. **Set up environment variables**:
-Create a `.env.local` file in the root directory with:
+Create a `.env` file in the root directory with:
 ```env
 # Discord Bot Configuration
 TOKEN=your_discord_bot_token
@@ -183,9 +183,9 @@ To enable Discord authentication, you'll need to create a Discord application:
 4. **Update Environment Variables**:
    ```bash
    # Copy the example file
-   cp .env.example .env.local
+   cp .env.example .env
    
-   # Edit .env.local with your Discord credentials
+   # Edit .env with your Discord credentials
    DISCORD_CLIENT_ID=your_client_id_here
    DISCORD_CLIENT_SECRET=your_client_secret_here
    NEXT_PUBLIC_DISCORD_CLIENT_ID=your_client_id_here
