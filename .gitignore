@@ -41,3 +41,26 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# Google Cloud SDK (downloaded locally)
+google-cloud-sdk/
+google-cloud-sdk.tar.gz
+
+# Build artifacts
+.turbo/
+.cache/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Package manager lock files (optional - remove if you want to commit them)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo

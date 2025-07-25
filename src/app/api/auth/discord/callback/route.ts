@@ -6,7 +6,7 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || 'http://localhost:3000/auth/discord/callback';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-change-in-production';
-const OWNERS = process.env.OWNERS?.split(',') || [];
+const ADMINS = process.env.ADMINS?.split(',') || [];
 
 export async function POST(request: NextRequest) {
   try {
@@ -89,8 +89,9 @@ export async function POST(request: NextRequest) {
 
     const userData = await userResponse.json();
 
-    // Check if user is a moderator
-    const isModerator = OWNERS.includes(userData.id);
+    // Check if user is a moderator and admin using Firestore
+    const isModerator = await FirestoreService.isModerator(userData.id);
+    const isAdmin = ADMINS.includes(userData.id);
 
     try {
       // Create or update user in Firestore
@@ -108,6 +109,7 @@ export async function POST(request: NextRequest) {
           discordId: userData.id,
           username: userData.username,
           isModerator,
+          isAdmin,
         },
         JWT_SECRET,
         { expiresIn: '7d' }
@@ -121,6 +123,7 @@ export async function POST(request: NextRequest) {
           username: userData.username,
           avatar: user.avatar,
           isModerator,
+          isAdmin,
         },
         token,
       });

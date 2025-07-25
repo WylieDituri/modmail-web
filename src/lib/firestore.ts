@@ -1,5 +1,5 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, collection, doc, addDoc, getDoc, getDocs, updateDoc, query, where, orderBy, Timestamp, deleteDoc, DocumentData, QueryDocumentSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, doc, addDoc, getDoc, getDocs, updateDoc, query, where, orderBy, Timestamp, deleteDoc, setDoc } from 'firebase/firestore';
 import { User, ChatSession, Message, CreateUserData, CreateSessionData, CreateMessageData, ModeratorStats, GroupedSessions } from '@/types';
 
 // Firebase configuration
@@ -21,6 +21,7 @@ export class FirestoreService {
   static get users() { return collection(db, 'users'); }
   static get sessions() { return collection(db, 'sessions'); }
   static get messages() { return collection(db, 'messages'); }
+  static get config() { return collection(db, 'config'); }
 
   // Utility function to convert Firestore timestamp to Date
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -129,6 +130,66 @@ export class FirestoreService {
     });
   }
 
+  static async getModerators(): Promise<User[]> {
+    const q = query(this.users, where('isModerator', '==', true));
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        discordId: data.discordId,
+        username: data.username,
+        avatar: data.avatar,
+        isModerator: data.isModerator || false,
+        createdAt: this.convertTimestamp(data.createdAt),
+        updatedAt: this.convertTimestamp(data.updatedAt),
+      };
+    });
+  }
+
+  static async getModeratorStats(moderatorId: string): Promise<ModeratorStats> {
+    // Get sessions assigned to this moderator
+    const sessionsQuery = query(this.sessions, where('assignedModerator', '==', moderatorId));
+    const sessionsSnapshot = await getDocs(sessionsQuery);
+    
+    const sessions = sessionsSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        status: data.status,
+        satisfactionRating: data.satisfactionRating,
+        createdAt: this.convertTimestamp(data.createdAt),
+        updatedAt: this.convertTimestamp(data.updatedAt),
+        lastActivity: this.convertTimestamp(data.lastActivity || data.updatedAt),
+      };
+    });
+
+    const totalSessions = sessions.length;
+    const activeSessions = sessions.filter(s => s.status === 'active').length;
+    
+    // Calculate sessions resolved today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const resolvedToday = sessions.filter(s => 
+      s.status === 'closed' && 
+      s.updatedAt >= today
+    ).length;
+
+    // Calculate satisfaction rate
+    const sessionsWithRating = sessions.filter(s => s.satisfactionRating !== undefined);
+    const positiveRatings = sessionsWithRating.filter(s => s.satisfactionRating === 'thumbs_up').length;
+    const satisfactionRate = sessionsWithRating.length > 0 
+      ? (positiveRatings / sessionsWithRating.length) * 100 
+      : 0;
+
+    return {
+      totalSessions,
+      activeSessions,
+      resolvedToday,
+      satisfactionRate,
+    };
+  }
+
   // Session operations
   static async createSession(sessionData: CreateSessionData): Promise<ChatSession> {
     const now = Timestamp.now();
@@ -187,6 +248,9 @@ export class FirestoreService {
         assignedModerator: data.assignedModerator,
         closedAt: data.closedAt ? this.convertTimestamp(data.closedAt) : null,
         satisfactionRating: data.satisfactionRating,
+        isPinned: data.isPinned || false,
+        pinnedBy: data.pinnedBy || null,
+        pinnedAt: data.pinnedAt ? this.convertTimestamp(data.pinnedAt) : null,
         user,
         messages,
       };
@@ -217,6 +281,9 @@ export class FirestoreService {
           assignedModerator: data.assignedModerator,
           closedAt: data.closedAt ? this.convertTimestamp(data.closedAt) : null,
           satisfactionRating: data.satisfactionRating,
+          isPinned: data.isPinned || false,
+          pinnedBy: data.pinnedBy || null,
+          pinnedAt: data.pinnedAt ? this.convertTimestamp(data.pinnedAt) : null,
           user,
           messages,
         });
@@ -230,6 +297,9 @@ export class FirestoreService {
     status: 'active' | 'closed' | 'waiting';
     assignedModerator: string;
     satisfactionRating: 'thumbs_up' | 'thumbs_down';
+    isPinned: boolean;
+    pinnedBy: string | null;
+    pinnedAt: Date | null;
   }>): Promise<ChatSession | null> {
     const docRef = doc(this.sessions, id);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,6 +307,11 @@ export class FirestoreService {
       ...updates,
       updatedAt: Timestamp.now(),
     };
+
+    // Convert Date objects to Firestore Timestamps for pin-related fields
+    if (updates.pinnedAt !== undefined) {
+      updateData.pinnedAt = updates.pinnedAt ? Timestamp.fromDate(updates.pinnedAt) : null;
+    }
 
     if (updates.status) {
       updateData.lastActivity = Timestamp.now();
@@ -271,6 +346,9 @@ export class FirestoreService {
           assignedModerator: data.assignedModerator,
           closedAt: data.closedAt ? this.convertTimestamp(data.closedAt) : null,
           satisfactionRating: data.satisfactionRating,
+          isPinned: data.isPinned || false,
+          pinnedBy: data.pinnedBy || null,
+          pinnedAt: data.pinnedAt ? this.convertTimestamp(data.pinnedAt) : null,
           user,
           messages,
         });
@@ -455,6 +533,20 @@ export class FirestoreService {
     return lastUpdated;
   }
 
+  // Update last updated timestamp to trigger SSE updates
+  static async updateLastUpdated(): Promise<void> {
+    try {
+      // Update a meta document to trigger timestamp change
+      const metaRef = doc(db, 'meta', 'lastUpdated');
+      await setDoc(metaRef, {
+        timestamp: Timestamp.now(),
+        updated: new Date().toISOString()
+      }, { merge: true });
+    } catch (error) {
+      console.error('Failed to update last updated timestamp:', error);
+    }
+  }
+
   // Cleanup method for development/testing
   static async clearAllData(): Promise<void> {
     console.warn('Clearing all Firestore data - this should only be used in development!');
@@ -476,5 +568,75 @@ export class FirestoreService {
     for (const doc of usersSnapshot.docs) {
       await deleteDoc(doc.ref);
     }
+  }
+
+  // Configuration management
+  static async getModeratorsConfig(): Promise<string[]> {
+    try {
+      const configDoc = await getDoc(doc(this.config, 'moderators'));
+      if (configDoc.exists()) {
+        const data = configDoc.data();
+        return data.discordIds || [];
+      }
+      // If no config exists, fall back to environment variable
+      return process.env.OWNERS?.split(',').filter(id => id.trim()) || [];
+    } catch (error) {
+      console.error('Error getting moderators config:', error);
+      // Fall back to environment variable on error
+      return process.env.OWNERS?.split(',').filter(id => id.trim()) || [];
+    }
+  }
+
+  static async updateModeratorsConfig(discordIds: string[]): Promise<void> {
+    const configDocRef = doc(this.config, 'moderators');
+    await setDoc(configDocRef, {
+      discordIds: discordIds.filter(id => id.trim()),
+      updatedAt: Timestamp.now(),
+      updatedBy: 'admin', // You could pass the admin user ID here
+    }, { merge: true });
+  }
+
+  static async addModerator(discordId: string): Promise<string[]> {
+    const currentModerators = await this.getModeratorsConfig();
+    if (!currentModerators.includes(discordId)) {
+      const newModerators = [...currentModerators, discordId];
+      await this.updateModeratorsConfig(newModerators);
+      
+      // Update the user's isModerator status if they exist
+      const user = await this.getUserByDiscordId(discordId);
+      if (user) {
+        const userDocRef = doc(this.users, user.id);
+        await updateDoc(userDocRef, {
+          isModerator: true,
+          updatedAt: Timestamp.now(),
+        });
+      }
+      
+      return newModerators;
+    }
+    return currentModerators;
+  }
+
+  static async removeModerator(discordId: string): Promise<string[]> {
+    const currentModerators = await this.getModeratorsConfig();
+    const newModerators = currentModerators.filter(id => id !== discordId);
+    await this.updateModeratorsConfig(newModerators);
+    
+    // Update the user's isModerator status if they exist
+    const user = await this.getUserByDiscordId(discordId);
+    if (user) {
+      const userDocRef = doc(this.users, user.id);
+      await updateDoc(userDocRef, {
+        isModerator: false,
+        updatedAt: Timestamp.now(),
+      });
+    }
+    
+    return newModerators;
+  }
+
+  static async isModerator(discordId: string): Promise<boolean> {
+    const moderators = await this.getModeratorsConfig();
+    return moderators.includes(discordId);
   }
 }

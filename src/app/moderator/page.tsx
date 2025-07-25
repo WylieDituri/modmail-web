@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import { MessageSquare, Users, CheckCircle, Send, X, ChevronDown, ChevronRight, User, LogOut, Search } from 'lucide-react';
-import { ChatSession, ModeratorStats, GroupedSessions, getMessageDisplayAuthor, getMessageDisplayName, Message } from '@/types';
+import { MessageSquare, Users, CheckCircle, Send, X, ChevronDown, ChevronRight, User, LogOut, Search, Pin, Clock, Shield } from 'lucide-react';
+import { ChatSession, GroupedSessions, getMessageDisplayAuthor, getMessageDisplayName, getLastModeratorReply, Message } from '@/types';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
+import { useRealTimeData } from '@/hooks/useRealTimeDataSimple';
 
 
 // Memoized session item component to prevent unnecessary re-renders
@@ -13,13 +14,17 @@ const SessionItem = memo(function SessionItem({
   isSelected, 
   onClick, 
   isUserInactive, 
-  formatTimeAgo 
+  formatTimeAgo,
+  getSessionDuration,
+  toggleSessionPin 
 }: {
   session: ChatSession;
   isSelected: boolean;
   onClick: () => void;
   isUserInactive: (session: ChatSession) => boolean;
   formatTimeAgo: (date: Date | string) => string;
+  getSessionDuration: (session: ChatSession) => string;
+  toggleSessionPin: (sessionId: string, currentPinStatus: boolean) => void;
 }) {
   const handleClick = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -27,11 +32,17 @@ const SessionItem = memo(function SessionItem({
     onClick();
   }, [onClick]);
 
+  const handlePinClick = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleSessionPin(session.id, session.isPinned || false);
+  }, [toggleSessionPin, session.id, session.isPinned]);
+
   return (
     <div
       className={`p-4 border-b cursor-pointer hover:bg-gray-50 transition-colors duration-150 ${
         isSelected ? 'bg-blue-50 border-blue-200' : ''
-      }`}
+      } ${session.isPinned ? 'border-l-4 border-l-yellow-400' : ''}`}
       onClick={handleClick}
     >
       <div className="flex items-center justify-between">
@@ -42,25 +53,43 @@ const SessionItem = memo(function SessionItem({
           <div className="ml-3 flex-1">
             <div className="flex items-center space-x-2">
               <p className="text-sm font-medium text-gray-900">{session.user?.username || 'Unknown User'}</p>
+              {session.isPinned && (
+                <Pin className="h-3 w-3 text-yellow-600" />
+              )}
               {session.status !== 'closed' && isUserInactive(session) && (
                 <span className="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded-full">
                   Inactive User
                 </span>
               )}
             </div>
-            <p className="text-xs text-gray-500">{formatTimeAgo(session.lastActivity)}</p>
+            <div className="flex items-center space-x-2 mt-1">
+              <p className="text-xs text-gray-500">{formatTimeAgo(session.lastActivity)}</p>
+              <span className="text-xs text-gray-400">•</span>
+              <div className="flex items-center space-x-1">
+                <Clock className="h-3 w-3 text-gray-400" />
+                <p className="text-xs text-gray-500">{getSessionDuration(session)}</p>
+              </div>
+              {getLastModeratorReply(session) && (
+                <>
+                  <span className="text-xs text-gray-400">•</span>
+                  <p className="text-xs text-blue-600">Last reply: {getLastModeratorReply(session)}</p>
+                </>
+              )}
+            </div>
           </div>
         </div>
-        <div className="flex items-center">
-          <span className={`px-2 py-1 text-xs rounded-full ${
-            session.status === 'active' 
-              ? 'bg-green-100 text-green-800' 
-              : session.status === 'closed'
-              ? 'bg-gray-100 text-gray-800'
-              : 'bg-yellow-100 text-yellow-800'
-          }`}>
-            {session.status}
-          </span>
+        <div className="flex items-center space-x-2">
+          {session.status !== 'closed' && (
+            <button
+              onClick={handlePinClick}
+              className={`p-1 rounded hover:bg-gray-100 ${
+                session.isPinned ? 'text-yellow-600' : 'text-gray-400'
+              }`}
+              title={session.isPinned ? 'Unpin session' : 'Pin session'}
+            >
+              <Pin className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
       <p className="text-xs text-gray-600 mt-2 truncate">
@@ -73,39 +102,35 @@ const SessionItem = memo(function SessionItem({
 export default function ModeratorDashboard() {
   const router = useRouter();
   const { user, isLoading: isCheckingAuth, isAuthenticated, logout } = useAuth();
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [groupedSessions, setGroupedSessions] = useState<GroupedSessions[]>([]);
+  
+  // Use polling for real-time updates  
+  const {
+    sessions,
+    groupedSessions,
+    stats,
+    optimisticPinUpdate,
+    optimisticMessageUpdate,
+    removeOptimisticUpdate,
+    isSocketConnected,
+    refetch
+  } = useRealTimeData({
+    isAuthenticated
+  });
+
   const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<'list' | 'grouped'>('grouped');
   const [selectedSession, setSelectedSession] = useState<ChatSession | null>(null);
   const [pendingSessionSelection, setPendingSessionSelection] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [replyAnonymously, setReplyAnonymously] = useState(false);
-  // const [socket, setSocket] = useState<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const previousSessionsRef = useRef<ChatSession[]>([]);
-  const previousGroupedSessionsRef = useRef<GroupedSessions[]>([]);
-  const previousStatsRef = useRef<ModeratorStats>({
-    totalSessions: 0,
-    activeSessions: 0,
-    resolvedToday: 0,
-    satisfactionRate: 0
-  });
-  const previousSelectedSessionMessagesRef = useRef<unknown[]>([]);
-  const lastUpdatedRef = useRef<number>(0);
   const [lastMessageCount, setLastMessageCount] = useState(0);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const [lastSelectedSessionId, setLastSelectedSessionId] = useState<string | null>(null);
   const [viewClosedSessions, setViewClosedSessions] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
-  const [stats, setStats] = useState<ModeratorStats>({
-    totalSessions: 0,
-    activeSessions: 0,
-    resolvedToday: 0,
-    satisfactionRate: 0
-  });
 
   // Check if user is a moderator (middleware should already handle basic auth)
   useEffect(() => {
@@ -119,124 +144,6 @@ export default function ModeratorDashboard() {
   const handleLogout = () => {
     logout();
   };
-
-  useEffect(() => {
-    // TODO: Enable Socket.IO when server is ready
-    // const socketConnection = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
-    // setSocket(socketConnection);
-
-    return () => {
-      // TODO: Cleanup socket connection when enabled
-      // socketConnection.close();
-    };
-  }, []);
-
-  // Separate useEffect for data fetching that depends on authentication
-  useEffect(() => {
-    // Only fetch data if authenticated
-    if (!isAuthenticated || isCheckingAuth) {
-      return;
-    }
-
-    // Fetch sessions and stats from API
-    const fetchData = async () => {
-      try {
-        // First check if data has been updated
-        const lastUpdatedResponse = await fetch('/api/lastUpdated');
-        if (lastUpdatedResponse.ok) {
-          const { lastUpdated } = await lastUpdatedResponse.json();
-          
-          // Always fetch data on initial load or if data has been updated
-          const isInitialLoad = lastUpdatedRef.current === 0;
-          const hasUpdates = lastUpdated > lastUpdatedRef.current;
-          
-          if (isInitialLoad || hasUpdates) {
-            console.log('Fetching sessions and stats...', { isInitialLoad, hasUpdates, lastUpdated, lastRef: lastUpdatedRef.current });
-            
-            const [sessionsResponse, groupedResponse, statsResponse] = await Promise.all([
-              fetch('/api/sessions?includeAll=true'),
-              fetch('/api/sessions/grouped?includeAll=true'),
-              fetch('/api/stats')
-            ]);
-
-            if (sessionsResponse.ok) {
-              const sessionsData = await sessionsResponse.json();
-              
-              // Check if there are changes before updating (skip on initial load)
-              const hasSessionChanges = JSON.stringify(sessionsData) !== JSON.stringify(previousSessionsRef.current);
-              
-              if (isInitialLoad || hasSessionChanges) {
-                console.log('Sessions data updated:', {
-                  oldCount: previousSessionsRef.current.length,
-                  newCount: sessionsData.length,
-                  hasChanges: hasSessionChanges,
-                  isInitialLoad
-                });
-                setSessions(sessionsData);
-                previousSessionsRef.current = sessionsData;
-              }
-            }
-
-            if (groupedResponse.ok) {
-              const groupedData = await groupedResponse.json();
-              
-              // Check if there are changes before updating (skip on initial load)
-              const hasGroupedChanges = JSON.stringify(groupedData) !== JSON.stringify(previousGroupedSessionsRef.current);
-              
-              if (isInitialLoad || hasGroupedChanges) {
-                console.log('Grouped sessions data updated:', {
-                  oldCount: previousGroupedSessionsRef.current.length,
-                  newCount: groupedData.length,
-                  hasChanges: hasGroupedChanges,
-                  isInitialLoad,
-                  groupedData: groupedData
-                });
-                setGroupedSessions(groupedData);
-                previousGroupedSessionsRef.current = groupedData;
-              }
-            }
-
-            if (statsResponse.ok) {
-              const statsData = await statsResponse.json();
-              
-              // Check if stats have changed (skip on initial load)
-              const hasStatsChanges = JSON.stringify(statsData) !== JSON.stringify(previousStatsRef.current);
-              
-              if (isInitialLoad || hasStatsChanges) {
-                console.log('Stats data updated:', statsData, { isInitialLoad });
-                setStats(statsData);
-                previousStatsRef.current = statsData;
-              }
-            }
-            
-            lastUpdatedRef.current = lastUpdated;
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-        // Only set default empty state on initial load, not on polling errors
-        if (lastUpdatedRef.current === 0) {
-          setSessions([]);
-          setGroupedSessions([]);
-          setStats({
-            totalSessions: 0,
-            activeSessions: 0,
-            resolvedToday: 0,
-            satisfactionRate: 0
-          });
-        }
-      }
-    };
-
-    fetchData();
-
-    // Increase polling interval to 5 seconds to reduce server load and UI flicker
-    const interval = setInterval(fetchData, 5000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, [isAuthenticated, isCheckingAuth]);
 
   // Debounce search query for better performance
   useEffect(() => {
@@ -276,6 +183,12 @@ export default function ModeratorDashboard() {
   const handleSendMessage = async () => {
     if (!message.trim() || !selectedSession || !user) return;
 
+    const messageContent = message;
+    const isAnonymous = replyAnonymously;
+    
+    // Clear message input immediately for better UX
+    setMessage('');
+
     try {
       // First ensure moderator user exists
       const moderatorResponse = await fetch('/api/users', {
@@ -293,13 +206,37 @@ export default function ModeratorDashboard() {
       if (moderatorResponse.ok) {
         const moderator = await moderatorResponse.json();
         
+        // Create optimistic message object with a more unique temporary ID
+        const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const optimisticMessage: Message = {
+          id: tempId,
+          content: messageContent,
+          timestamp: new Date().toISOString(),
+          authorId: moderator.id,
+          sessionId: selectedSession.id,
+          author: moderator,
+          isAnonymous
+        };
+
+        // Apply optimistic update immediately
+        const updateId = optimisticMessageUpdate(
+          selectedSession.id,
+          optimisticMessage,
+          moderator.id // assignedModerator
+        );
+
+        // Scroll to bottom immediately to show optimistic message
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 50);
+        
         // Always use the actual moderator's ID for logging, but mark as anonymous when needed
         const messageData = {
-          content: message,
+          content: messageContent,
           authorId: moderator.id,
           authorName: moderator.username,
           sessionId: selectedSession.id,
-          isAnonymous: replyAnonymously, // Add the isAnonymous flag
+          isAnonymous, // Add the isAnonymous flag
         };
         
         // Create message via API
@@ -312,7 +249,7 @@ export default function ModeratorDashboard() {
         });
 
         if (response.ok) {
-          const newMessage = await response.json();
+          await response.json(); // Get the response but we don't need to store it
           
           // Update session status to active when moderator responds
           await fetch(`/api/sessions/${selectedSession.id}`, {
@@ -322,57 +259,29 @@ export default function ModeratorDashboard() {
             },
             body: JSON.stringify({
               status: 'active',
-              moderatorId: moderator.id,
+              assignedModerator: moderator.id,
             }),
           });
           
-          // Update local state with deduplication
-          setSelectedSession(prev => {
-            if (!prev) return prev;
-            
-            // Check if message already exists to prevent duplicates
-            const messageExists = prev.messages.some(m => m.id === newMessage.id);
-            if (messageExists) return prev;
-            
-            return {
-              ...prev,
-              status: 'active',
-              messages: [...prev.messages, newMessage]
-            };
-          });
-
-          setSessions(prev => prev.map(session => {
-            if (session.id !== selectedSession.id) return session;
-            
-            // Check if message already exists to prevent duplicates
-            const messageExists = session.messages.some(m => m.id === newMessage.id);
-            if (messageExists) {
-              return { ...session, status: 'active' };
-            }
-            
-            return { 
-              ...session, 
-              status: 'active', 
-              messages: [...session.messages, newMessage] 
-            };
-          }));
-
-          setMessage('');
+          // Don't manually remove optimistic update - let the hook handle it automatically
+        } else {
+          // Failed to send - revert optimistic update immediately
+          console.error('Failed to send message');
+          removeOptimisticUpdate(updateId);
           
-          // Scroll to bottom to show the new message
-          setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          }, 100);
+          // Restore message input
+          setMessage(messageContent);
         }
       }
     } catch (error) {
       console.error('Failed to send message:', error);
+      // Restore message input on error
+      setMessage(messageContent);
     }
   };
 
   const handleCloseSession = async (sessionId: string) => {
     try {
-      console.log('Closing session:', sessionId);
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: {
@@ -384,15 +293,9 @@ export default function ModeratorDashboard() {
       });
 
       if (response.ok) {
-        const updatedSession = await response.json();
-        console.log('Session closed successfully:', updatedSession);
+        await response.json();
         
-        // Update the sessions list to mark as closed
-        setSessions(prev => prev.map(session => 
-          session.id === sessionId 
-            ? { ...session, status: 'closed' as const }
-            : session
-        ));
+        // Note: Real-time hook will handle updating the sessions list
         
         // Clear selected session if it's the one being closed
         if (selectedSession?.id === sessionId) {
@@ -413,7 +316,6 @@ export default function ModeratorDashboard() {
     const seen = new Set();
     return messages.filter((message) => {
       if (seen.has(message.id)) {
-        console.warn('Duplicate message detected:', message.id);
         return false;
       }
       seen.add(message.id);
@@ -438,10 +340,11 @@ export default function ModeratorDashboard() {
     return `${Math.floor(diffInMinutes / 1440)}d ago`;
   };
 
-  // Reset message tracking when selected session changes
+  // Reset message tracking when selected session changes - simplified since real-time handles updates
   useEffect(() => {
     if (selectedSession) {
-      previousSelectedSessionMessagesRef.current = selectedSession.messages || [];
+      // Reset tracking for new session selection
+      setLastMessageCount(selectedSession.messages.length);
     }
   }, [selectedSession]);
 
@@ -456,63 +359,11 @@ export default function ModeratorDashboard() {
         const updatedSessionStr = JSON.stringify(updatedSession);
         
         if (selectedSessionStr !== updatedSessionStr) {
-          console.log('Syncing selected session with sessions list');
           setSelectedSession(updatedSession);
         }
       }
     }
   }, [sessions, selectedSession]);
-
-  // Enhanced message polling that integrates with main data fetching
-  useEffect(() => {
-    if (!selectedSession) return;
-
-    const fetchSelectedSessionMessages = async () => {
-      try {
-        const response = await fetch(`/api/messages?sessionId=${selectedSession.id}`);
-        if (response.ok) {
-          const rawMessages = await response.json();
-          const messages = deduplicateMessages(rawMessages);
-          
-          // Only update if messages have actually changed
-          const messagesChanged = JSON.stringify(messages) !== JSON.stringify(previousSelectedSessionMessagesRef.current);
-          
-          if (messagesChanged) {
-            console.log('Selected session messages updated:', {
-              oldCount: previousSelectedSessionMessagesRef.current.length,
-              newCount: messages.length
-            });
-            
-            // Update both selected session and sessions list atomically
-            const updatedSession = { ...selectedSession, messages };
-            
-            setSelectedSession(updatedSession);
-            setSessions(prev => prev.map(session => 
-              session.id === selectedSession.id 
-                ? updatedSession
-                : session
-            ));
-            
-            previousSelectedSessionMessagesRef.current = messages;
-          }
-        } else {
-          console.error('Failed to fetch messages - HTTP status:', response.status);
-        }
-      } catch (error) {
-        console.error('Failed to fetch messages for selected session:', error);
-      }
-    };
-
-    // Initial fetch
-    fetchSelectedSessionMessages();
-    
-    // Set up polling (every 2 seconds) for the selected session - reduced frequency to reduce conflicts
-    const messageInterval = setInterval(fetchSelectedSessionMessages, 2000);
-
-    return () => {
-      clearInterval(messageInterval);
-    };
-  }, [selectedSession, deduplicateMessages]);
 
   // Only handle scrolling for new messages in the SAME session
   useEffect(() => {
@@ -601,26 +452,52 @@ export default function ModeratorDashboard() {
 
   // Helper function to get filtered sessions for display
   const getFilteredSessions = useCallback((sessions: ChatSession[]) => {
-    if (viewClosedSessions) {
-      return sessions.filter(session => session.status === 'closed');
+    const filtered = viewClosedSessions 
+      ? sessions.filter(session => session.status === 'closed')
+      : sessions.filter(session => session.status !== 'closed');
+    
+    // Sort pinned sessions to the top (only for open sessions)
+    if (!viewClosedSessions) {
+      return filtered.sort((a, b) => {
+        // Pinned sessions first
+        if (a.isPinned && !b.isPinned) return -1;
+        if (!a.isPinned && b.isPinned) return 1;
+        // Then by last activity
+        return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
+      });
     }
-    return sessions.filter(session => session.status !== 'closed');
+    
+    return filtered;
   }, [viewClosedSessions]);
 
   // Helper function to get filtered grouped sessions
   const getFilteredGroupedSessions = useCallback((groups: GroupedSessions[]) => {
-    if (viewClosedSessions) {
-      // For closed view, only show groups that have closed sessions
-      return groups.map(group => ({
-        ...group,
-        sessions: group.sessions.filter(session => session.status === 'closed')
-      })).filter(group => group.sessions.length > 0);
+    const filteredGroups = viewClosedSessions 
+      ? groups.map(group => ({
+          ...group,
+          sessions: group.sessions.filter(session => session.status === 'closed')
+        })).filter(group => group.sessions.length > 0)
+      : groups.map(group => ({
+          ...group,
+          sessions: group.sessions.filter(session => session.status !== 'closed')
+        })).filter(group => group.sessions.length > 0);
+    
+    // Sort groups by pinned sessions first (only for open sessions)
+    if (!viewClosedSessions) {
+      return filteredGroups.sort((a, b) => {
+        const aPinned = a.sessions.some(session => session.isPinned);
+        const bPinned = b.sessions.some(session => session.isPinned);
+        
+        // Groups with pinned sessions first
+        if (aPinned && !bPinned) return -1;
+        if (!aPinned && bPinned) return 1;
+        
+        // Then by latest activity
+        return new Date(b.latestActivity).getTime() - new Date(a.latestActivity).getTime();
+      });
     }
-    // For active view, only show groups that have non-closed sessions
-    return groups.map(group => ({
-      ...group,
-      sessions: group.sessions.filter(session => session.status !== 'closed')
-    })).filter(group => group.sessions.length > 0);
+    
+    return filteredGroups;
   }, [viewClosedSessions]);
 
   // Helper function to filter sessions by search query
@@ -685,27 +562,61 @@ export default function ModeratorDashboard() {
     return filterGroupedSessionsBySearch(filtered, debouncedSearchQuery);
   }, [groupedSessions, debouncedSearchQuery, getFilteredGroupedSessions, filterGroupedSessionsBySearch]);
 
-  // Debug function to log filtering results
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.log('=== Session Filtering Debug ===');
-      console.log('View Closed Sessions:', viewClosedSessions);
-      console.log('Search Query:', debouncedSearchQuery);
-      console.log('Total Sessions:', sessions.length);
-      console.log('Filtered Sessions:', getFilteredSessions(sessions).length);
-      console.log('Filtered + Searched Sessions:', filteredAndSearchedSessions.length);
-      console.log('Total Groups:', groupedSessions.length);
-      console.log('Filtered Groups:', getFilteredGroupedSessions(groupedSessions).length);
-      console.log('Filtered + Searched Groups:', filteredAndSearchedGroupedSessions.length);
-      
-      // Log session statuses
-      const sessionStatuses = sessions.reduce((acc, session) => {
-        acc[session.status] = (acc[session.status] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-      console.log('Session Statuses:', sessionStatuses);
+  // Helper function to calculate session duration
+  const getSessionDuration = useCallback((session: ChatSession) => {
+    const startTime = new Date(session.createdAt);
+    const endTime = session.status === 'closed' && session.closedAt 
+      ? new Date(session.closedAt) 
+      : new Date();
+    
+    const diffInMinutes = Math.floor((endTime.getTime() - startTime.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 60) {
+      return `${diffInMinutes}m`;
+    } else if (diffInMinutes < 1440) {
+      const hours = Math.floor(diffInMinutes / 60);
+      const minutes = diffInMinutes % 60;
+      return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+    } else {
+      const days = Math.floor(diffInMinutes / 1440);
+      const hours = Math.floor((diffInMinutes % 1440) / 60);
+      return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
     }
-  }, [sessions, groupedSessions, viewClosedSessions, debouncedSearchQuery, getFilteredSessions, getFilteredGroupedSessions, filteredAndSearchedSessions, filteredAndSearchedGroupedSessions]);
+  }, []);
+
+  // Helper function to toggle session pin status with optimistic updates
+  const toggleSessionPin = useCallback(async (sessionId: string, currentPinStatus: boolean) => {
+    try {
+      // Apply optimistic update immediately
+      const updateId = optimisticPinUpdate(
+        sessionId, 
+        !currentPinStatus, 
+        user?.discordId
+      );
+      
+      const response = await fetch(`/api/sessions/${sessionId}/pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ pin: !currentPinStatus }),
+      });
+      
+      if (response.ok) {
+        await response.json();
+        // Don't manually remove optimistic update - let the hook handle it automatically
+      } else {
+        const errorData = await response.text();
+        console.error('Failed to toggle session pin - status:', response.status, 'error:', errorData);
+        // Remove failed optimistic update immediately
+        removeOptimisticUpdate(updateId);
+      }
+    } catch (error) {
+      console.error('Failed to toggle session pin:', error);
+      // Remove failed optimistic update (if we have the updateId)
+    }
+  }, [user, optimisticPinUpdate, removeOptimisticUpdate]);
 
   // Show loading spinner while checking auth
   if (isCheckingAuth) {
@@ -731,9 +642,32 @@ export default function ModeratorDashboard() {
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900">Moderator Dashboard</h1>
           <div className="flex items-center space-x-4">
+            {/* Real-time connection status */}
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${isSocketConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-xs text-gray-500">
+                {isSocketConnected ? 'Real-time' : 'Polling'}
+              </span>
+            </div>
+            <button
+              onClick={refetch}
+              className="text-sm text-gray-600 hover:text-gray-800 transition-colors"
+              title="Refresh data"
+            >
+              🔄
+            </button>
             <span className="text-sm text-gray-600">
               Welcome, {user?.username}
             </span>
+            {user?.isAdmin && (
+              <button
+                onClick={() => router.push('/admin')}
+                className="flex items-center space-x-2 px-3 py-2 text-sm text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-lg transition-colors border border-blue-200"
+              >
+                <Shield className="h-4 w-4" />
+                <span>Admin Panel</span>
+              </button>
+            )}
             <button
               onClick={handleLogout}
               className="flex items-center space-x-2 px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
@@ -747,6 +681,7 @@ export default function ModeratorDashboard() {
 
       {/* Stats Cards */}
       <div className="max-w-7xl mx-auto px-4 py-6">
+        
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow p-6">
             <div className="flex items-center">
@@ -882,6 +817,8 @@ export default function ModeratorDashboard() {
                         onClick={() => handleSessionSelection(session)}
                         isUserInactive={isUserInactive}
                         formatTimeAgo={formatTimeAgo}
+                        getSessionDuration={getSessionDuration}
+                        toggleSessionPin={toggleSessionPin}
                       />
                     ))
                   )
@@ -910,7 +847,7 @@ export default function ModeratorDashboard() {
                           <div
                             className={`p-4 cursor-pointer hover:bg-gray-50 ${
                               selectedSession?.id === group.sessions[0].id ? 'bg-blue-50 border-blue-200' : ''
-                            }`}
+                            } ${group.sessions[0].isPinned ? 'border-l-4 border-l-yellow-400' : ''}`}
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
@@ -925,35 +862,52 @@ export default function ModeratorDashboard() {
                                 <div className="ml-3 flex-1">
                                   <div className="flex items-center space-x-2">
                                     <p className="text-sm font-medium text-gray-900">{group.user.username || 'Guest User'}</p>
+                                    {group.sessions[0].isPinned && (
+                                      <Pin className="h-3 w-3 text-yellow-600" />
+                                    )}
                                     <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
                                       Guest
                                     </span>
-                                    {group.hasActiveSession && (
-                                      <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-                                        Active
-                                      </span>
-                                    )}
                                     {group.hasNewMessages && (
                                       <span className="px-2 py-1 text-xs bg-red-100 text-red-800 rounded-full">
                                         New Messages
                                       </span>
                                     )}
                                   </div>
-                                  <p className="text-xs text-gray-500 mt-1">
-                                    {group.sessions[0].messages.length} message{group.sessions[0].messages.length !== 1 ? 's' : ''} • {formatTimeAgo(group.latestActivity)}
-                                  </p>
+                                  <div className="flex items-center space-x-2 mt-1">
+                                    <p className="text-xs text-gray-500">
+                                      {group.sessions[0].messages.length} message{group.sessions[0].messages.length !== 1 ? 's' : ''} • {formatTimeAgo(group.latestActivity)}
+                                    </p>
+                                    <span className="text-xs text-gray-400">•</span>
+                                    <div className="flex items-center space-x-1">
+                                      <Clock className="h-3 w-3 text-gray-400" />
+                                      <p className="text-xs text-gray-500">{getSessionDuration(group.sessions[0])}</p>
+                                    </div>
+                                    {getLastModeratorReply(group.sessions[0]) && (
+                                      <>
+                                        <span className="text-xs text-gray-400">•</span>
+                                        <p className="text-xs text-blue-600">Last reply: {getLastModeratorReply(group.sessions[0])}</p>
+                                      </>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                               <div className="flex items-center space-x-2">
-                                <span className={`px-2 py-1 text-xs rounded-full ${
-                                  group.sessions[0].status === 'active' 
-                                    ? 'bg-green-100 text-green-800' 
-                                    : group.sessions[0].status === 'closed'
-                                    ? 'bg-gray-100 text-gray-800'
-                                    : 'bg-yellow-100 text-yellow-800'
-                                }`}>
-                                  {group.sessions[0].status}
-                                </span>
+                                {group.sessions[0].status !== 'closed' && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      toggleSessionPin(group.sessions[0].id, group.sessions[0].isPinned || false);
+                                    }}
+                                    className={`p-1 rounded hover:bg-gray-100 ${
+                                      group.sessions[0].isPinned ? 'text-yellow-600' : 'text-gray-400'
+                                    }`}
+                                    title={group.sessions[0].isPinned ? 'Unpin session' : 'Pin session'}
+                                  >
+                                    <Pin className="h-4 w-4" />
+                                  </button>
+                                )}
                                 {group.sessions[0].status === 'closed' && group.sessions[0].satisfactionRating && (
                                   <span className={`px-2 py-1 text-xs rounded-full ${
                                     group.sessions[0].satisfactionRating === 'thumbs_up'
@@ -984,11 +938,6 @@ export default function ModeratorDashboard() {
                                 <div className="ml-3 flex-1">
                                   <div className="flex items-center space-x-2">
                                     <p className="text-sm font-medium text-gray-900">{group.user.username || 'Unknown User'}</p>
-                                    {group.hasActiveSession && (
-                                      <span className="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-                                        Active
-                                      </span>
-                                    )}
                                     {group.hasNewMessages && (
                                       <span className="px-2 py-1 text-xs bg-red-100 text-red-800 rounded-full">
                                         New Messages
@@ -997,6 +946,13 @@ export default function ModeratorDashboard() {
                                   </div>
                                   <p className="text-xs text-gray-500 mt-1">
                                     {group.sessions.length} session{group.sessions.length !== 1 ? 's' : ''} • Last active: {formatTimeAgo(group.latestActivity)}
+                                    {/* Show moderator name from the most recent session */}
+                                    {(() => {
+                                      const mostRecentSession = group.sessions
+                                        .sort((a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime())[0];
+                                      const lastMod = getLastModeratorReply(mostRecentSession);
+                                      return lastMod ? ` • Last reply: ${lastMod}` : '';
+                                    })()}
                                   </p>
                                 </div>
                               </div>
@@ -1017,7 +973,7 @@ export default function ModeratorDashboard() {
                                     key={session.id}
                                     className={`p-3 ml-4 border-l-2 cursor-pointer hover:bg-gray-100 ${
                                       selectedSession?.id === session.id ? 'bg-blue-50 border-blue-400' : 'border-gray-200'
-                                    }`}
+                                    } ${session.isPinned ? 'border-l-4 border-l-yellow-400' : ''}`}
                                     onClick={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
@@ -1030,26 +986,48 @@ export default function ModeratorDashboard() {
                                           <p className="text-sm text-gray-900">
                                             Session {session.id.slice(-6)}
                                           </p>
+                                          {session.isPinned && (
+                                            <Pin className="h-3 w-3 text-yellow-600" />
+                                          )}
                                           {session.status !== 'closed' && isUserInactive(session) && (
                                             <span className="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded-full">
                                               Inactive
                                             </span>
                                           )}
                                         </div>
-                                        <p className="text-xs text-gray-500 mt-1">
-                                          {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} • {formatTimeAgo(session.createdAt)}
-                                        </p>
+                                        <div className="flex items-center space-x-2 mt-1">
+                                          <p className="text-xs text-gray-500">
+                                            {session.messages.length} message{session.messages.length !== 1 ? 's' : ''} • {formatTimeAgo(session.createdAt)}
+                                          </p>
+                                          <span className="text-xs text-gray-400">•</span>
+                                          <div className="flex items-center space-x-1">
+                                            <Clock className="h-3 w-3 text-gray-400" />
+                                            <p className="text-xs text-gray-500">{getSessionDuration(session)}</p>
+                                          </div>
+                                          {getLastModeratorReply(session) && (
+                                            <>
+                                              <span className="text-xs text-gray-400">•</span>
+                                              <p className="text-xs text-blue-600">Last reply: {getLastModeratorReply(session)}</p>
+                                            </>
+                                          )}
+                                        </div>
                                       </div>
                                       <div className="flex items-center space-x-2">
-                                        <span className={`px-2 py-1 text-xs rounded-full ${
-                                          session.status === 'active' 
-                                            ? 'bg-green-100 text-green-800' 
-                                            : session.status === 'closed'
-                                            ? 'bg-gray-100 text-gray-800'
-                                            : 'bg-yellow-100 text-yellow-800'
-                                        }`}>
-                                          {session.status}
-                                        </span>
+                                        {session.status !== 'closed' && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              toggleSessionPin(session.id, session.isPinned || false);
+                                            }}
+                                            className={`p-1 rounded hover:bg-gray-100 ${
+                                              session.isPinned ? 'text-yellow-600' : 'text-gray-400'
+                                            }`}
+                                            title={session.isPinned ? 'Unpin session' : 'Pin session'}
+                                          >
+                                            <Pin className="h-4 w-4" />
+                                          </button>
+                                        )}
                                         {session.status === 'closed' && session.satisfactionRating && (
                                           <span className={`px-2 py-1 text-xs rounded-full ${
                                             session.satisfactionRating === 'thumbs_up'

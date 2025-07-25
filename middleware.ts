@@ -5,10 +5,13 @@ import { verify } from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-fallback-secret-change-in-production';
 
 // Routes that require authentication
-const protectedRoutes = ['/moderator', '/dashboard'];
+const protectedRoutes = ['/moderator', '/dashboard', '/admin'];
 
 // Routes that require moderator access
 const moderatorRoutes = ['/moderator'];
+
+// Routes that require admin access
+const adminRoutes = ['/admin'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -16,6 +19,7 @@ export function middleware(request: NextRequest) {
   // Check if this is a protected route
   const isProtectedRoute = protectedRoutes.some(route => pathname.startsWith(route));
   const isModerator = moderatorRoutes.some(route => pathname.startsWith(route));
+  const isAdmin = adminRoutes.some(route => pathname.startsWith(route));
   
   if (!isProtectedRoute) {
     return NextResponse.next();
@@ -36,9 +40,18 @@ export function middleware(request: NextRequest) {
       discordId: string;
       username: string;
       isModerator: boolean;
+      isAdmin: boolean;
     };
 
+    // Check admin access for admin routes
+    if (isAdmin && !decoded.isAdmin) {
+      // Redirect non-admins to dashboard
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    }
+
     // Check moderator access for moderator routes
+    // Note: We rely on the JWT token's isModerator flag which is set during login
+    // based on the current Firestore moderators list
     if (isModerator && !decoded.isModerator) {
       // Redirect non-moderators to dashboard
       return NextResponse.redirect(new URL('/dashboard', request.url));
@@ -50,6 +63,7 @@ export function middleware(request: NextRequest) {
     requestHeaders.set('x-discord-id', decoded.discordId);
     requestHeaders.set('x-username', decoded.username);
     requestHeaders.set('x-is-moderator', decoded.isModerator.toString());
+    requestHeaders.set('x-is-admin', decoded.isAdmin.toString());
 
     return NextResponse.next({
       request: {
@@ -65,5 +79,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/moderator/:path*', '/dashboard/:path*'],
+  matcher: ['/moderator/:path*', '/dashboard/:path*', '/admin/:path*'],
 };

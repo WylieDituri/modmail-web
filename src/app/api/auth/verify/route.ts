@@ -33,6 +33,7 @@ export async function GET(request: Request) {
       discordId: string;
       username: string;
       isModerator: boolean;
+      isAdmin: boolean;
     };
 
     return NextResponse.json({
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
         discordId: decoded.discordId,
         username: decoded.username,
         isModerator: decoded.isModerator,
+        isAdmin: decoded.isAdmin,
       }
     });
 

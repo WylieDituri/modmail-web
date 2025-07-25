@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // WARNING: These are permissive rules because this app uses custom JWT auth
+    // instead of Firebase Authentication. For better security, consider moving
+    // all Firestore operations to server-side API routes only.
+    
+    // Users collection - temporarily allow all access
+    // TODO: Move to server-side only operations
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+    
+    // Sessions collection - temporarily allow all access  
+    // TODO: Move to server-side only operations
+    match /sessions/{sessionId} {
+      allow read, write: if true;
+    }
+    
+    // Messages collection - temporarily allow all access
+    // TODO: Move to server-side only operations
+    match /messages/{messageId} {
+      allow read, write: if true;
+    }
+    
+    // Config collection - temporarily allow all access
+    // TODO: Move to server-side only operations
+    match /config/{configId} {
+      allow read, write: if true;
+    }
+    
+    // Last updated tracker - temporarily allow all access
+    // TODO: Move to server-side only operations
+    match /meta/lastUpdated {
+      allow read, write: if true;
+    }
+    
+    // Stats collection - temporarily allow all access
+    // TODO: Move to server-side only operations
+    match /stats/{statsId} {
+      allow read, write: if true;
+    }
+    
+    // Default deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

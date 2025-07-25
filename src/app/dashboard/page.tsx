@@ -1,31 +1,18 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { MessageSquare, Plus, Clock, CheckCircle2, AlertCircle, User, ExternalLink } from 'lucide-react';
 import { ChatSession } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
 
-export default function UserDashboard() {
-  const searchParams = useSearchParams();
+function UserDashboardContent() {
   const router = useRouter();
-  const [discordId, setDiscordId] = useState<string | null>(null);
+  const { user, isLoading: authLoading, isAuthenticated } = useAuth();
   const [userSessions, setUserSessions] = useState<ChatSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [username, setUsername] = useState<string>('');
 
-  useEffect(() => {
-    const userId = searchParams.get('discordId');
-    if (!userId) {
-      // Redirect back to home if no Discord ID
-      router.push('/');
-      return;
-    }
-    setDiscordId(userId);
-    setUsername(`User#${userId.slice(-4)}`); // Display last 4 digits as username
-    fetchUserSessions(userId);
-  }, [searchParams, router]);
-
-  const fetchUserSessions = async (discordUserId: string) => {
+  const fetchUserSessions = useCallback(async (discordUserId: string) => {
     try {
       setIsLoading(true);
       
@@ -37,7 +24,7 @@ export default function UserDashboard() {
         },
         body: JSON.stringify({
           discordId: discordUserId,
-          username: `User#${discordUserId.slice(-4)}`,
+          username: user?.username || `User#${discordUserId.slice(-4)}`,
           isModerator: false,
         }),
       });
@@ -57,10 +44,27 @@ export default function UserDashboard() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user?.username]);
+
+  useEffect(() => {
+    if (authLoading) return; // Wait for auth check to complete
+    
+    if (!isAuthenticated || !user) {
+      router.push('/');
+      return;
+    }
+
+    // If user is a moderator, redirect them to the moderator dashboard
+    if (user.isModerator) {
+      router.push('/moderator');
+      return;
+    }
+
+    fetchUserSessions(user.discordId);
+  }, [authLoading, isAuthenticated, user, router, fetchUserSessions]);
 
   const handleCreateNewSession = async () => {
-    if (!discordId) return;
+    if (!user?.discordId) return;
 
     try {
       // Create user if not exists
@@ -70,14 +74,14 @@ export default function UserDashboard() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          discordId: discordId,
-          username: username,
+          discordId: user.discordId,
+          username: user.username,
           isModerator: false,
         }),
       });
 
       if (userResponse.ok) {
-        const user = await userResponse.json();
+        const userData = await userResponse.json();
         
         // Create a new session
         const sessionResponse = await fetch('/api/sessions', {
@@ -86,7 +90,7 @@ export default function UserDashboard() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            userId: user.id,
+            userId: userData.id,
           }),
         });
 
@@ -95,7 +99,7 @@ export default function UserDashboard() {
           // Open the new session in a new tab
           window.open(`/session/${sessionData.id}`, '_blank');
           // Refresh the sessions list
-          fetchUserSessions(discordId);
+          fetchUserSessions(user.discordId);
         }
       }
     } catch (error) {
@@ -172,7 +176,7 @@ export default function UserDashboard() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Your Support Sessions</h1>
-                <p className="text-sm text-gray-600">Discord: {username}</p>
+                <p className="text-sm text-gray-600">Discord: {user?.username || 'User'}</p>
               </div>
             </div>
             <button
@@ -260,5 +264,20 @@ export default function UserDashboard() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function UserDashboard() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-4xl text-center">
+          <MessageSquare className="h-12 w-12 text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading dashboard...</p>
+        </div>
+      </div>
+    }>
+      <UserDashboardContent />
+    </Suspense>
   );
 }

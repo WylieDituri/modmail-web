@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { FirestoreService } from '@/lib/firestore';
 
+// Trigger SSE update
+async function broadcastUpdate() {
+  try {
+    await FirestoreService.updateLastUpdated();
+  } catch (error) {
+    console.error('Failed to broadcast update:', error);
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -60,6 +69,9 @@ export async function PATCH(
         { status: 404 }
       );
     }
+
+    // Trigger SSE update
+    await broadcastUpdate();
 
     return NextResponse.json(session);
   } catch (error) {

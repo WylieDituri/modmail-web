@@ -5,6 +5,7 @@ interface AuthUser {
   discordId: string;
   username: string;
   isModerator: boolean;
+  isAdmin: boolean;
 }
 
 interface AuthState {

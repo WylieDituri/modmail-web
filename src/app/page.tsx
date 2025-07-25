@@ -2,9 +2,9 @@
 
 import { MessageSquare, User, Users } from "lucide-react";
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 
-export default function Home() {
+function HomeContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [discordUserId, setDiscordUserId] = useState<string | null>(null);
@@ -192,17 +192,22 @@ export default function Home() {
         <p className="text-xs text-gray-500 mt-6">
           Discord accounts can see chat history and manage multiple sessions
         </p>
-        
-        <div className="mt-8 pt-4 border-t border-gray-200">
-          <p className="text-xs text-gray-500 mb-2">Already a moderator?</p>
-          <button
-            onClick={() => router.push('/moderator')}
-            className="text-sm text-blue-600 hover:text-blue-700 underline font-medium"
-          >
-            Go to Moderator Dashboard
-          </button>
-        </div>
       </div>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+          <MessageSquare className="h-12 w-12 text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <HomeContent />
+    </Suspense>
   );
 }

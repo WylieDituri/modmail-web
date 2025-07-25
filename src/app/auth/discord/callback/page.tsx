@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { MessageSquare, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 
-export default function DiscordCallback() {
+function DiscordCallbackContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
@@ -121,5 +121,22 @@ export default function DiscordCallback() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DiscordCallback() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md text-center">
+          <div className="space-y-4">
+            <Loader2 className="h-8 w-8 text-blue-600 mx-auto animate-spin" />
+            <p className="text-gray-600">Loading...</p>
+          </div>
+        </div>
+      </div>
+    }>
+      <DiscordCallbackContent />
+    </Suspense>
   );
 }

@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { FirestoreService } from '@/lib/firestore';
 
+// Trigger SSE update
+async function broadcastUpdate() {
+  try {
+    await FirestoreService.updateLastUpdated();
+  } catch (error) {
+    console.error('Failed to broadcast update:', error);
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -55,6 +64,9 @@ export async function POST(request: NextRequest) {
       userId,
       assignedModerator,
     });
+
+    // Trigger SSE update
+    await broadcastUpdate();
 
     console.log('Created session:', session.id);
     return NextResponse.json(session);

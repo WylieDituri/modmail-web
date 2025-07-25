@@ -31,8 +31,6 @@ export function useOptimizedPolling<T>({
           
           // Only fetch full data if it's been updated
           if (lastUpdated > lastUpdatedRef.current) {
-            console.log('Data has been updated, fetching new data...');
-            
             const response = await fetch(url);
             if (response.ok) {
               const newData = await response.json();

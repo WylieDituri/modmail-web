@@ -82,7 +82,7 @@ To set up moderator access:
 - `POST /api/auth/logout` - Logout user
 
 ### **Authentication Flow:**
-1. User visits `/login` and clicks "Continue with Discord"
+1. User visits the landing page (`/`) and clicks "Continue with Discord"
 2. Redirected to Discord OAuth authorization
 3. Discord redirects back to `/auth/discord/callback`
 4. User data is saved to Firestore with JWT token
@@ -104,7 +104,7 @@ To set up moderator access:
    npm run dev
    ```
 
-2. **Visit the login page**: `http://localhost:3000/login`
+2. **Visit the home page**: `http://localhost:3000/`
 
 3. **Test the flow**:
    - Click "Continue with Discord"
